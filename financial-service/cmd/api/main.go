@@ -22,7 +22,7 @@ const webPort = "82"
 var counts int64
 
 //go:embed migrations/*.sql
-var embedMigrations embed.FS
+var EmbedMigrations embed.FS
 
 type Config struct {
 	Repo   data.Repository
@@ -49,7 +49,7 @@ func main() {
 	}
 	app.setupRepo(conn)
 
-	goose.SetBaseFS(embedMigrations)
+	goose.SetBaseFS(EmbedMigrations)
 
 	migrationsDir := os.Getenv("GOOSE_MIGRATION_DIR")
 
@@ -61,13 +61,10 @@ func main() {
 		panic(err)
 	}
 
-	// Инициализация Gin
 	router := gin.Default()
 
-	// Настройка маршрутов
 	app.routes(router)
 
-	// Запуск сервера
 	log.Printf("Starting server on port %s\n", webPort)
 	if err := router.Run(fmt.Sprintf(":%s", webPort)); err != nil {
 		log.Panic(err)
