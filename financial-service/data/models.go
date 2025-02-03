@@ -3,8 +3,8 @@ package data
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"github.com/shopspring/decimal"
-	"log"
 	"time"
 )
 
@@ -23,129 +23,150 @@ func NewPostgresRepository(pool *sql.DB) *PostgresRepository {
 	}
 }
 
-// User is the structure which holds one user from the database.
-type User struct {
-	ID        int             `json:"id"`
-	Email     string          `json:"email"`
-	FirstName string          `json:"first_name,omitempty"`
-	LastName  string          `json:"last_name,omitempty"`
-	Password  string          `json:"-"`
-	Active    int             `json:"active"`
-	Balance   decimal.Decimal `json:"score"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
-}
-
 type Transactions struct {
 	ID             int             `json:"ID"`
-	userIDSource   int             `json:"UserIDSource"`
-	userIDEndpoint int             `json:"UserIDEndpoint"`
-	amount         decimal.Decimal `json:"Amount"`
+	UserIDSource   int             `json:"UserIDSource"`
+	UserIDEndpoint int             `json:"UserIDEndpoint"`
+	Amount         decimal.Decimal `json:"Amount"`
 	CreatedAt      time.Time       `json:"CreatedAt"`
 }
 
-// AddMoney adds  some points
+// AddMoney adds some amount of money to users balance
 func (u *PostgresRepository) AddMoney(id int, amount decimal.Decimal) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
-	stmt := `update users set
-        amount = amount + $1,
-        updated_at = $2
-		where id = $3
-	`
-
-	_, err := db.ExecContext(ctx, stmt,
-		amount,
-		time.Now(),
-		id,
-	)
-
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelSerializable,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt := `UPDATE users SET balance = balance + $1, updated_at = $2 WHERE id = $3`
+	_, err = tx.ExecContext(ctx, stmt, amount, time.Now(), id)
+	if err != nil {
+		return fmt.Errorf("failed to update balance: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
-
 }
 
-// DecreaseMoney adds  some points
+// DecreaseMoney decreasing users balance for some amount
 func (u *PostgresRepository) DecreaseMoney(idSource int, amount decimal.Decimal) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
-	stmt := `UPDATE users SET 
-                 amount = amount - $1, 
-    			 updated_at = $2 
-             WHERE idEndpoint = $3`
-
-	_, err := db.ExecContext(ctx, stmt,
-		amount,
-		time.Now(),
-		idSource,
-	)
-
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var currentBalance decimal.Decimal
+	err = tx.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", idSource).Scan(&currentBalance)
+	if err != nil {
+		return fmt.Errorf("failed to get current balance: %w", err)
+	}
+
+	newBalance := currentBalance.Sub(amount)
+	if newBalance.IsNegative() {
+		return fmt.Errorf("insufficient balance: cannot decrease balance by %s, current balance is %s", amount.String(), currentBalance.String())
+	}
+
+	stmt := `UPDATE users SET balance = balance - $1, updated_at = $2 WHERE id = $3`
+	_, err = tx.ExecContext(ctx, stmt, amount, time.Now(), idSource)
+	if err != nil {
+		return fmt.Errorf("failed to update balance: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
 }
 
-// GetAll returns a slice of all users, sorted by last name
+// GetLastTransactions returns a slice of 10 transactions, sorted by date
 func (u *PostgresRepository) GetLastTransactions(id int) ([]*Transactions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
-	query := `select ID, userIDSource, userIDEndpoint, amount, CreatedAt
-	from transactions where userIDSource = $1 order by CreatedAt desc LIMIT 10`
-
-	rows, err := db.QueryContext(ctx, query)
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelSerializable,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+        SELECT id, useridsource, useridendpoint, amount, createdat
+        FROM transactions
+        WHERE useridsource = $1 OR useridendpoint = $1
+        ORDER BY createdat DESC
+        LIMIT 10
+    `
+	rows, err := tx.QueryContext(ctx, query, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transactions: %w", err)
 	}
 	defer rows.Close()
 
 	var transactions []*Transactions
-
 	for rows.Next() {
 		var transaction Transactions
 		err := rows.Scan(
 			&transaction.ID,
-			&transaction.userIDSource,
-			&transaction.userIDEndpoint,
-			&transaction.amount,
+			&transaction.UserIDSource,
+			&transaction.UserIDEndpoint,
+			&transaction.Amount,
 			&transaction.CreatedAt,
 		)
 		if err != nil {
-			log.Println("Error scanning", err)
-			return nil, err
+			return nil, fmt.Errorf("failed to scan transaction: %w", err)
 		}
-
 		transactions = append(transactions, &transaction)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return transactions, nil
 }
 
+// AddTransaction adds transaction to the database
 func (u *PostgresRepository) AddTransaction(amount decimal.Decimal, id ...int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
 	defer cancel()
 
-	var newID int
-	stmt := `insert into transactions (userIDSource, userIdEndpoint, amount, created_at, updated_at)
-		values ($1, $2, $3, $4, $5) returning id`
-
-	err := db.QueryRowContext(ctx, stmt,
-		id[1],
-		id[2],
-		amount,
-		time.Now(),
-		time.Now(),
-	).Scan(&newID)
-
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelSerializable,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmt := `
+        INSERT INTO transactions (userIDSource, userIDEndpoint, amount, createdat)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id
+    `
+	var newID int
+	err = tx.QueryRowContext(ctx, stmt, id[0], id[1], amount, time.Now()).Scan(&newID)
+	if err != nil {
+		return fmt.Errorf("failed to add transaction: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil
