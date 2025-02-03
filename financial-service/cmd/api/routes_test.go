@@ -1,36 +1,108 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 )
 
-func Test_routes_exist(t *testing.T) {
-	testApp := Config{}
+// TestCORS checks for CORS middleware correctly set headers
+func TestCORS(t *testing.T) {
+	router := gin.Default()
+	app := &Config{}
+	app.routes(router)
 
-	testRoutes := testApp.routes()
-	chiRoutes := testRoutes.(chi.Router)
+	req, _ := http.NewRequest("OPTIONS", "/ping", nil)
+	resp := httptest.NewRecorder()
 
-	routes := []string{"/depositMoney", "/transferMoney", "/getLastTransactions"}
+	router.ServeHTTP(resp, req)
 
-	for _, route := range routes {
-		routeExists(t, chiRoutes, route)
-	}
+	assert.Equal(t, "*", resp.Header().Get("Access-Control-Allow-Origin"))
+	assert.Equal(t, "GET, POST, PUT, DELETE, OPTIONS", resp.Header().Get("Access-Control-Allow-Methods"))
+	assert.Equal(t, "Accept, Authorization, Content-Type, X-CSRF-Token", resp.Header().Get("Access-Control-Allow-Headers"))
+	assert.Equal(t, "true", resp.Header().Get("Access-Control-Allow-Credentials"))
+	assert.Equal(t, "300", resp.Header().Get("Access-Control-Max-Age"))
+
+	assert.Equal(t, 204, resp.Code)
 }
 
-func routeExists(t *testing.T, routes chi.Router, route string) {
-	found := false
+// TestPingRoute  checks routes for correct handling
+func TestPingRoute(t *testing.T) {
+	router := gin.Default()
+	app := &Config{}
+	app.routes(router)
 
-	_ = chi.Walk(routes, func(method string, foundRoute string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
-		if route == foundRoute {
-			found = true
-		}
-		return nil
-	})
+	req, _ := http.NewRequest("GET", "/ping", nil)
+	resp := httptest.NewRecorder()
 
-	if !found {
-		t.Errorf("did not find %s in registered routes", route)
+	router.ServeHTTP(resp, req)
+
+	assert.Equal(t, 200, resp.Code)
+
+	var response map[string]string
+	err := json.Unmarshal(resp.Body.Bytes(), &response)
+	assert.Nil(t, err)
+	assert.Equal(t, "pong", response["message"])
+}
+
+// TestDepositMoneyRoute checks routes for correct handling
+func TestDepositMoneyRoute(t *testing.T) {
+	router := gin.Default()
+	app := &Config{}
+	app.routes(router)
+
+	payload := map[string]interface{}{
+		"Id":     123,
+		"Amount": "100.50",
 	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", "/depositMoney", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	assert.Equal(t, 200, resp.Code)
+}
+
+// TestTransferMoneyRoute checks routes for correct handling
+func TestTransferMoneyRoute(t *testing.T) {
+	router := gin.Default()
+	app := &Config{}
+	app.routes(router)
+
+	payload := map[string]interface{}{
+		"IdSource":   123,
+		"IdEndpoint": 456,
+		"Amount":     "50.25",
+	}
+	body, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", "/transferMoney", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	assert.Equal(t, 200, resp.Code)
+}
+
+// TestGetLastTransactionsRoute checks routes for correct handling
+func TestGetLastTransactionsRoute(t *testing.T) {
+	router := gin.Default()
+	app := &Config{}
+	app.routes(router)
+
+	req, _ := http.NewRequest("GET", "/getLastTransactions?id=123", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	assert.Equal(t, 200, resp.Code)
 }
