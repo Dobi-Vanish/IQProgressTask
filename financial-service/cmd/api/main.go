@@ -21,6 +21,7 @@ const webPort = "82"
 
 var counts int64
 
+//go:embed migrations/*.sql
 var embedMigrations embed.FS
 
 type Config struct {
