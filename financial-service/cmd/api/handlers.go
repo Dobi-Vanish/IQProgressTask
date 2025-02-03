@@ -5,18 +5,24 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"net/http"
+	"time"
 )
 
-// GetLastTransactions retrieves all users from the database, sort them by points
+type Transactions struct {
+	ID             int             `json:"ID"`
+	UserIDSource   int             `json:"UserIDSource"`
+	UserIDEndpoint int             `json:"UserIDEndpoint"`
+	Amount         decimal.Decimal `json:"Amount"`
+	CreatedAt      time.Time       `json:"CreatedAt"`
+}
+
+// GetLastTransactions retrieves 10 last transactions for user from the database, sort them by points
 func (app *Config) GetLastTransactions(c *gin.Context) {
-	// Структура для парсинга JSON-запроса
 	var requestPayload struct {
 		ID int `json:"Id"`
 	}
 
-	// Парсим JSON из тела запроса
 	if err := c.ShouldBindJSON(&requestPayload); err != nil {
-		// Возвращаем ошибку, если JSON невалидный
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   true,
 			"message": "Invalid JSON",
@@ -24,18 +30,15 @@ func (app *Config) GetLastTransactions(c *gin.Context) {
 		return
 	}
 
-	// Получаем транзакции из репозитория
 	transactions, err := app.Repo.GetLastTransactions(requestPayload.ID)
 	if err != nil {
-		// Возвращаем ошибку, если не удалось получить транзакции
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   true,
-			"message": "Couldn't fetch last 10 transactions",
+			"message": "Couldn't fetch last 10 transactions ",
 		})
 		return
 	}
 
-	// Возвращаем успешный ответ с данными
 	c.JSON(http.StatusOK, gin.H{
 		"error":   false,
 		"message": "Fetched all transactions",
@@ -43,16 +46,14 @@ func (app *Config) GetLastTransactions(c *gin.Context) {
 	})
 }
 
+// depositMoney deposits money to the users balance
 func (app *Config) depositMoney(c *gin.Context) {
-	// Структура для парсинга JSON-запроса
 	var requestPayload struct {
 		Amount decimal.Decimal `json:"Amount"`
 		ID     int             `json:"Id"`
 	}
 
-	// Парсим JSON из тела запроса
 	if err := c.ShouldBindJSON(&requestPayload); err != nil {
-		// Возвращаем ошибку, если JSON невалидный
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   true,
 			"message": "Invalid JSON",
@@ -60,56 +61,47 @@ func (app *Config) depositMoney(c *gin.Context) {
 		return
 	}
 
-	// Добавляем деньги пользователю
 	err := app.Repo.AddMoney(requestPayload.ID, requestPayload.Amount)
+
 	if err != nil {
-		// Возвращаем ошибку, если не удалось добавить деньги
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   true,
 			"message": "Couldn't add money to the user",
 		})
 		return
 	}
+	err = app.Repo.AddTransaction(requestPayload.Amount, requestPayload.ID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   true,
+			"message": "Couldn't add transaction",
+		})
+		return
+	}
 
-	// Возвращаем успешный ответ
 	c.JSON(http.StatusOK, gin.H{
 		"error":   false,
 		"message": fmt.Sprintf("Deposit money worked for user with id %d, added money %s", requestPayload.ID, requestPayload.Amount.String()),
 	})
 }
 
+// transferMoney transfers money from one user to another
 func (app *Config) transferMoney(c *gin.Context) {
-	// Структура для парсинга JSON-запроса
 	var requestPayload struct {
 		Amount     decimal.Decimal `json:"Amount"`
 		IDSource   int             `json:"IdSource"`
 		IDEndpoint int             `json:"IdEndpoint"`
 	}
 
-	// Парсим JSON из тела запроса
 	if err := c.ShouldBindJSON(&requestPayload); err != nil {
-		// Возвращаем ошибку, если JSON невалидный
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   true,
 			"message": "Invalid JSON",
 		})
 		return
 	}
-
-	// Переводим деньги от одного пользователя к другому
-	err := app.Repo.AddMoney(requestPayload.IDEndpoint, requestPayload.Amount)
+	err := app.Repo.DecreaseMoney(requestPayload.IDSource, requestPayload.Amount)
 	if err != nil {
-		// Возвращаем ошибку, если не удалось добавить деньги
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   true,
-			"message": "Couldn't add money to the destination user",
-		})
-		return
-	}
-
-	err = app.Repo.DecreaseMoney(requestPayload.IDSource, requestPayload.Amount)
-	if err != nil {
-		// Возвращаем ошибку, если не удалось списать деньги
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   true,
 			"message": "Couldn't decrease money from the source user",
@@ -117,7 +109,24 @@ func (app *Config) transferMoney(c *gin.Context) {
 		return
 	}
 
-	// Возвращаем успешный ответ
+	err = app.Repo.AddMoney(requestPayload.IDEndpoint, requestPayload.Amount)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   true,
+			"message": "Couldn't add money to the destination user",
+		})
+		return
+	}
+
+	err = app.Repo.AddTransaction(requestPayload.Amount, requestPayload.IDSource, requestPayload.IDEndpoint)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   true,
+			"message": "Couldn't add transaction",
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"error":   false,
 		"message": "Transfer money worked successfully",
